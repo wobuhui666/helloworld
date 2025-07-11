@@ -39,7 +39,7 @@ class FirewallResetPlugin(Star):
             "afterConnect": 1.0,
             "afterUsername": 0.5,
             "afterPassword": 1.5,
-            "betweenCommands": 0.5,
+            "betweenCommands": 1.5,
         }
 
         self.COMMANDS_TO_RUN = [
