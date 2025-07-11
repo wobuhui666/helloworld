@@ -2,8 +2,8 @@
 # 文件名: firewall_resetter.py
 
 # 导入 AstrBot 框架的必要模块
-# 注意，我们需要从 filter 中导入 PermissionType
-from astrbot.api.event import filter, AstrMessageEvent, PermissionType
+# 【修正】不再尝试从 event 导入 PermissionType
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
@@ -49,7 +49,7 @@ class FirewallResetPlugin(Star):
             "ip6tables -P OUTPUT ACCEPT",
         ]
 
-    # 这是一个同步的、会阻塞的方法。我们将在一个单独的线程中运行它。
+    # _run_telnet_task 方法保持不变
     def _run_telnet_task(self) -> tuple[bool, str]:
         # ... 这部分代码保持不变 ...
         log_lines = []
@@ -95,20 +95,16 @@ class FirewallResetPlugin(Star):
 
 
     # --- 注册指令的装饰器 ---
-    # 监听 /checkwall 命令
     @filter.command("checkwall")
-    # 【新增】添加权限过滤器，只允许管理员(ADMIN)或更高级别的人使用
-    @filter.permission_type(PermissionType.ADMIN)
+    # 【修正】通过 filter.PermissionType 来引用权限枚举
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def reset_firewall_handler(self, event: AstrMessageEvent):
         """处理 /checkwall 命令，执行防火墙重置任务"""
         
-        # 1. 先给用户一个即时反馈
         yield event.plain_result("权限验证通过。正在开始执行防火墙重置任务...")
 
-        # 2. 在新线程中运行阻塞任务
         success, log_message = await asyncio.to_thread(self._run_telnet_task)
 
-        # 3. 任务完成后，发送最终报告
         if success:
             final_message = "✅ 防火墙重置任务成功完成。\n\n"
         else:
