@@ -218,7 +218,7 @@ class MarkdownConverterPlugin(Star):
                     logger.info("Playwright Chromium 浏览器已存在，无需下载。")
 
                 result = subprocess.run(
-                    [sys.executable, "-m", "playwright", "install", "firefox"],
+                    [sys.executable, "-m", "playwright", "install-deps"],
                     check=True,
                     capture_output=True,
                     text=True
