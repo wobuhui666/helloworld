@@ -17,6 +17,9 @@ import asyncio
 from playwright.async_api import async_playwright
 import uuid
 
+import subprocess
+import sys
+
 
 async def markdown_to_image_playwright(
     md_text: str,
@@ -190,12 +193,44 @@ class MarkdownConverterPlugin(Star):
         self.IMAGE_CACHE_DIR = os.path.join(self.DATA_DIR, "md2img_cache")
 
     async def initialize(self):
-        """初始化插件，确保图片缓存目录存在"""
+        """初始化插件，确保图片缓存目录和 Playwright 浏览器存在"""
         try:
             os.makedirs(self.IMAGE_CACHE_DIR, exist_ok=True)
+
+            # --- [核心修改] Playwright 浏览器自动安装 ---
+            logger.info("正在检查 Playwright 浏览器依赖...")
+            try:
+                # 使用 [sys.executable, "-m", ...] 可以确保我们用的是当前 Python 环境的 pip/playwright
+                # 明确指定 'chromium'，因为你的代码只用到了它，这样可以避免下载所有浏览器，速度更快
+                # `check=True` 会在命令执行失败时抛出异常
+                # `capture_output=True` 和 `text=True` 可以捕获命令的输出，避免在控制台刷屏
+                result = subprocess.run(
+                    [sys.executable, "-m", "playwright", "install", "chromium"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                # 如果 stdout 包含 "up to date"，说明是跳过下载的，可以不打印
+                if "up to date" not in result.stdout:
+                    logger.info(
+                        f"Playwright Chromium 安装/更新完成。\n{result.stdout}")
+                else:
+                    logger.info("Playwright Chromium 浏览器已存在，无需下载。")
+
+            except subprocess.CalledProcessError as e:
+                # 如果安装命令本身执行失败了
+                logger.error(f"自动安装 Playwright 浏览器失败，返回码: {e.returncode}")
+                logger.error(f"错误输出: \n{e.stderr}")
+            except FileNotFoundError:
+                # 如果 python -m playwright 这个命令都找不到
+                logger.error(
+                    "无法执行 Playwright 安装命令。请检查 Playwright Python 包是否已正确安装。")
+            # --- [核心修改结束] ---
+
             logger.info("Markdown 转图片插件已初始化")
+
         except Exception as e:
-            logger.error(f"创建 md2img 缓存目录失败: {e}")
+            logger.error(f"插件初始化过程中发生未知错误: {e}")
 
     async def terminate(self):
         """插件停用时调用"""
