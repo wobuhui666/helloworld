@@ -223,6 +223,7 @@ class MarkdownConverterPlugin(Star):
                     capture_output=True,
                     text=True
                 )
+                logger.info(f"Playwright 依赖安装完成。\n{result.stdout}")
 
             except subprocess.CalledProcessError as e:
                 # 如果安装命令本身执行失败了
