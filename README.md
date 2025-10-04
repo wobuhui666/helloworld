@@ -103,3 +103,7 @@ repo: https://github.com/t0saki/astrbot_plugin_markdown2img
 ### 图片缓存
 
 生成的图片存储在 `data/md2img_cache/` 目录下，使用 UUID 作为文件名确保唯一性。
+
+## 备注
+
+首次安装依赖较多，会在后台异步安装依赖，请在控制台中跟踪进度。

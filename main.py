@@ -154,31 +154,6 @@ int main() {
 }
 """
 
-
-def sync_markdown_to_image_playwright(md_text, output_image_path, scale=2, width=None):
-    asyncio.run(markdown_to_image_playwright(
-        md_text, output_image_path, scale, width))
-
-
-if __name__ == "__main__":
-    # 生成一个固定宽度的图片
-    output_file_fixed_width = f"markdown_width_{uuid.uuid4().hex[:6]}.png"
-    asyncio.run(markdown_to_image_playwright(
-        markdown_string,
-        output_file_fixed_width,
-        scale=2,
-        width=600  # 设置宽度为 600px
-    ))
-
-    # 生成一个自适应宽度的图片(不设置 width 参数)
-    output_file_auto_width = f"markdown_auto_{uuid.uuid4().hex[:6]}.png"
-    asyncio.run(markdown_to_image_playwright(
-        markdown_string,
-        output_file_auto_width,
-        scale=2
-    ))
-
-
 @register(
     "astrbot_plugin_md2img",
     "tosaki",  # Or your name
@@ -193,50 +168,60 @@ class MarkdownConverterPlugin(Star):
         self.IMAGE_CACHE_DIR = os.path.join(self.DATA_DIR, "md2img_cache")
 
     async def initialize(self):
-        """初始化插件，确保图片缓存目录和 Playwright 浏览器存在"""
+        """初始化插件，确保图片缓存目录和 Playwright 浏览器存在 (异步版本)"""
         try:
+            # os.makedirs is synchronous, but it's extremely fast and not a bottleneck.
+            # For a simple, one-off operation like this, it's fine to keep it.
             os.makedirs(self.IMAGE_CACHE_DIR, exist_ok=True)
 
-            # --- [核心修改] Playwright 浏览器自动安装 ---
-            logger.info("正在检查 Playwright 浏览器依赖...")
-            try:
-                # 使用 [sys.executable, "-m", ...] 可以确保我们用的是当前 Python 环境的 pip/playwright
-                # 明确指定 'chromium'，因为你的代码只用到了它，这样可以避免下载所有浏览器，速度更快
-                # `check=True` 会在命令执行失败时抛出异常
-                # `capture_output=True` 和 `text=True` 可以捕获命令的输出，避免在控制台刷屏
-                result = subprocess.run(
-                    [sys.executable, "-m", "playwright", "install", "chromium"],
-                    check=True,
-                    capture_output=True,
-                    text=True
+            logger.info("正在异步检查并安装 Playwright 浏览器依赖...")
+            
+            # This function starts a subprocess without blocking the event loop.
+
+            # Helper function to run a command and log its output
+            async def run_playwright_command(command: list, description: str):
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
                 )
-                # 如果 stdout 包含 "up to date"，说明是跳过下载的，可以不打印
-                if "up to date" not in result.stdout:
-                    logger.info(
-                        f"Playwright Chromium 安装/更新完成。\n{result.stdout}")
+
+                # Await the process to complete and capture the output
+                stdout, stderr = await process.communicate()
+
+                if process.returncode != 0:
+                    logger.error(
+                        f"自动安装 Playwright {description} 失败，返回码: {process.returncode}")
+                    if stderr:
+                        logger.error(
+                            f"错误输出: \n{stderr.decode('utf-8', errors='ignore')}")
+                    return False
                 else:
-                    logger.info("Playwright Chromium 浏览器已存在，无需下载。")
+                    output = stdout.decode('utf-8', errors='ignore')
+                    # Only log if there's meaningful output (e.g., not just "up to date")
+                    if "up to date" not in output:
+                        logger.info(
+                            f"Playwright {description} 安装/更新完成。\n{output}")
+                    else:
+                        logger.info(f"Playwright {description} 已是最新，无需下载。")
+                    return True
 
-                result = subprocess.run(
-                    [sys.executable, "-m", "playwright", "install-deps"],
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-                logger.info(f"Playwright 依赖安装完成。\n{result.stdout}")
+            # Command to install chromium browser
+            install_browser_cmd = [sys.executable, "-m",
+                                   "playwright", "install", "chromium"]
+            await run_playwright_command(install_browser_cmd, "Chromium 浏览器")
 
-            except subprocess.CalledProcessError as e:
-                # 如果安装命令本身执行失败了
-                logger.error(f"自动安装 Playwright 浏览器失败，返回码: {e.returncode}")
-                logger.error(f"错误输出: \n{e.stderr}")
-            except FileNotFoundError:
-                # 如果 python -m playwright 这个命令都找不到
-                logger.error(
-                    "无法执行 Playwright 安装命令。请检查 Playwright Python 包是否已正确安装。")
-            # --- [核心修改结束] ---
+            # Command to install system dependencies
+            install_deps_cmd = [sys.executable,
+                                "-m", "playwright", "install-deps"]
+            await run_playwright_command(install_deps_cmd, "系统依赖")
 
             logger.info("Markdown 转图片插件已初始化")
 
+        except FileNotFoundError:
+            # This error happens if 'python -m playwright' cannot be run
+            logger.error(
+                "无法执行 Playwright 安装命令。请检查 Playwright Python 包是否已正确安装。")
         except Exception as e:
             logger.error(f"插件初始化过程中发生未知错误: {e}")
 
@@ -347,3 +332,22 @@ def hello_world():
                 components.append(Plain(part))
 
         return components
+    
+
+if __name__ == "__main__":
+    # 生成一个固定宽度的图片
+    output_file_fixed_width = f"markdown_width_{uuid.uuid4().hex[:6]}.png"
+    asyncio.run(markdown_to_image_playwright(
+        markdown_string,
+        output_file_fixed_width,
+        scale=2,
+        width=600  # 设置宽度为 600px
+    ))
+
+    # 生成一个自适应宽度的图片(不设置 width 参数)
+    output_file_auto_width = f"markdown_auto_{uuid.uuid4().hex[:6]}.png"
+    asyncio.run(markdown_to_image_playwright(
+        markdown_string,
+        output_file_auto_width,
+        scale=2
+    ))
