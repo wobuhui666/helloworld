@@ -217,6 +217,13 @@ class MarkdownConverterPlugin(Star):
                 else:
                     logger.info("Playwright Chromium 浏览器已存在，无需下载。")
 
+                result = subprocess.run(
+                    [sys.executable, "-m", "playwright", "install", "firefox"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+
             except subprocess.CalledProcessError as e:
                 # 如果安装命令本身执行失败了
                 logger.error(f"自动安装 Playwright 浏览器失败，返回码: {e.returncode}")
