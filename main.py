@@ -327,7 +327,8 @@ def hello_world():
                     await markdown_to_image_playwright(
                         md_text=md_content,
                         output_image_path=output_path,
-                        scale=2  # 2倍缩放以获得更高清的图片
+                        scale=2,  # 2倍缩放以获得更高清的图片
+                        width=600  # 固定宽度为600px，内容过长会自动换行
                     )
 
                     if os.path.exists(output_path):
