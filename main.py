@@ -246,13 +246,13 @@ def hello_world():
             # 我们只处理纯文本部分
             if isinstance(item, Plain):
                 # 调用核心处理函数
-                components = self._process_text_with_markdown(item.text)
+                components = await self._process_text_with_markdown(item.text)
                 new_chain.extend(components)
             else:
                 new_chain.append(item)
         result.chain = new_chain
 
-    def _process_text_with_markdown(self, text: str) -> List:
+    async def _process_text_with_markdown(self, text: str) -> List:
         """
         处理包含 <md>...</md> 标签的文本。
         将其分割成 Plain 和 Image 组件的列表。
@@ -281,7 +281,7 @@ def hello_world():
 
                 try:
                     # 调用库函数生成图片
-                    sync_markdown_to_image_playwright(
+                    await markdown_to_image_playwright(
                         md_text=md_content,
                         output_image_path=output_path,
                         scale=2  # 2倍缩放以获得更高清的图片
