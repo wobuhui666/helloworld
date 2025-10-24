@@ -341,7 +341,7 @@ if __name__ == "__main__":
         markdown_string,
         output_file_fixed_width,
         scale=2,
-        width=600  # 设置宽度为 600px
+        width=1000  # 设置宽度为 600px
     ))
 
     # 生成一个自适应宽度的图片(不设置 width 参数)
