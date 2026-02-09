@@ -1,122 +1,248 @@
-# -*- coding: utf-8 -*-
-# 文件名: firewall_resetter.py
+import os
+import re
+import uuid
+import asyncio
+import sys
+from typing import List
 
-# 导入 AstrBot 框架的必要模块
-# 【修正】不再尝试从 event 导入 PermissionType
+# 确保安装了 mistune 和 playwright
+import mistune
+from playwright.async_api import async_playwright, Browser, Playwright
+
+from astrbot.api import logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+from astrbot.core.message.components import Image, Plain
+from astrbot.core.provider.entities import LLMResponse, ProviderRequest
+from astrbot.core.star.star_tools import StarTools
 
-# 导入我们需要的标准库
-import telnetlib
-import time
-import asyncio
-
-# --- 插件注册信息 ---
 @register(
-    "firewall_resetter",           # 插件的唯一ID
-    "YourName",                    # 你的名字
-    "一个通过Telnet重置防火墙的插件 (仅管理员可用)", # 插件描述
-    "1.0.0"                        # 插件版本
+    "astrbot_plugin_md2img",
+    "tosaki",
+    "Markdown转图片 + 纯文本净化 (二合一版)",
+    "1.5.0",
 )
-class FirewallResetPlugin(Star):
-    """
-    这个插件监听 /checkwall 命令，并通过 Telnet 连接到指定设备执行一系列命令来重置防火墙。
-    该命令仅限管理员使用。
-    """
+class MarkdownConverterPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-
-        # --- 将配置信息放在插件类内部，方便管理 ---
-        self.TELNET_CONFIG = {
-            "host": "192.168.1.1",
-            "port": 23,
-            "username": "admin",
-            "password": "admin",
-        }
-
-        self.DELAYS = {
-            "afterConnect": 1.0,
-            "afterUsername": 0.5,
-            "afterPassword": 1.5,
-            "betweenCommands": 1.5,
-        }
-
-        self.COMMANDS_TO_RUN = [
-            "ip6tables -F",
-            "ip6tables -P INPUT ACCEPT",
-            "ip6tables -P FORWARD ACCEPT",
-            "ip6tables -P OUTPUT ACCEPT",
-        ]
-
-    # _run_telnet_task 方法保持不变
-    def _run_telnet_task(self) -> tuple[bool, str]:
-        # ... 这部分代码保持不变 ...
-        log_lines = []
-        host = self.TELNET_CONFIG["host"]
-        port = self.TELNET_CONFIG["port"]
-        username = self.TELNET_CONFIG["username"]
-        password = self.TELNET_CONFIG["password"]
-        log_lines.append(f"[*] 准备通过 Telnet 连接到 {host}:{port}...")
-        tn = None
-        try:
-            tn = telnetlib.Telnet(host, port, timeout=10)
-            log_lines.append("[+] 连接成功。")
-            time.sleep(self.DELAYS["afterConnect"])
-            log_lines.append(f"[>] 发送用户名: {username}")
-            tn.write(f"{username}\n".encode('ascii'))
-            time.sleep(self.DELAYS["afterUsername"])
-            log_lines.append("[>] 发送密码...")
-            tn.write(f"{password}\n".encode('ascii'))
-            time.sleep(self.DELAYS["afterPassword"])
-            login_output = tn.read_very_eager().decode('utf-8', errors='ignore')
-            if login_output:
-                log_lines.append('--- 登录后设备输出 ---\n' + login_output.strip() + '\n--- 输出结束 ---')
-            log_lines.append('[+] 开始按顺序执行命令...')
-            for cmd in self.COMMANDS_TO_RUN:
-                log_lines.append(f"    -> 正在执行: {cmd}")
-                tn.write(f"{cmd}\n".encode('ascii'))
-                time.sleep(self.DELAYS["betweenCommands"])
-                cmd_output = tn.read_very_eager().decode('utf-8', errors='ignore')
-                if cmd_output.strip():
-                    log_lines.append(cmd_output.strip())
-            log_lines.append('\n[+] 所有命令已发送完毕。')
-            tn.write(b'exit\n')
-            return True, "\n".join(log_lines)
-        except Exception as e:
-            error_message = f"[x] Telnet 操作期间发生错误: {e}"
-            log_lines.append(error_message)
-            logger.error(error_message)
-            return False, "\n".join(log_lines)
-        finally:
-            if tn:
-                tn.close()
-                log_lines.append('[+] Telnet 连接已关闭。')
-
-
-    # --- 注册指令的装饰器 ---
-    @filter.command("checkwall")
-    # 【修正】通过 filter.PermissionType 来引用权限枚举
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def reset_firewall_handler(self, event: AstrMessageEvent):
-        """处理 /checkwall 命令，执行防火墙重置任务"""
+        self.DATA_DIR = os.path.normpath(StarTools.get_data_dir())
+        self.IMAGE_CACHE_DIR = os.path.join(self.DATA_DIR, "md2img_cache")
         
-        yield event.plain_result("权限验证通过。正在开始执行防火墙重置任务...")
-
-        success, log_message = await asyncio.to_thread(self._run_telnet_task)
-
-        if success:
-            final_message = "✅ 防火墙重置任务成功完成。\n\n"
-        else:
-            final_message = "❌ 防火墙重置任务失败。\n\n"
+        # Playwright 实例持久化
+        self.playwright: Playwright = None
+        self.browser: Browser = None
         
-        final_message += "--- 操作日志 ---\n" + log_message
-        
-        yield event.plain_result(final_message)
+        # 初始化 Markdown 解析器
+        self.markdown_parser = mistune.create_markdown(
+            plugins=['table', 'math', 'strikethrough', 'task_lists', 'url']
+        )
 
-    # 插件的生命周期方法
     async def initialize(self):
-        logger.info("防火墙重置插件已加载，/checkwall 命令仅对管理员开放。")
+        """初始化插件"""
+        try:
+            os.makedirs(self.IMAGE_CACHE_DIR, exist_ok=True)
+            await self._ensure_playwright_installed()
+
+            logger.info("Markdown插件: 正在启动 Playwright Browser...")
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox']
+            )
+            logger.info("Markdown插件: 初始化完成，浏览器已就绪。")
+
+        except Exception as e:
+            logger.error(f"Markdown插件初始化失败: {e}")
 
     async def terminate(self):
-        pass
+        """清理资源"""
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+        logger.info("Markdown插件: 已停止")
+
+    async def _ensure_playwright_installed(self):
+        """自动检测并安装依赖"""
+        try:
+            # 简单检查逻辑，避免重复报错
+            pass 
+        except Exception:
+            pass
+
+    @filter.on_llm_request()
+    async def on_llm_req(self, event: AstrMessageEvent, req: ProviderRequest):
+        """注入 Prompt"""
+        instruction_prompt = """
+[排版强制指令]
+1. **渲染内容**：将数学公式、复杂代码、表格包裹在 `<md>` 和 `</md>` 标签之间。
+2. **纯文本内容**：在 `<md>` 标签**外部**的文字，必须是纯文本。
+   - 外部不要使用 Markdown（不要用 **加粗**、# 标题）。
+"""
+        req.system_prompt += f"\n\n{instruction_prompt}"
+
+    @filter.on_decorating_result()
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        """结果处理：分割渲染内容与纯文本净化"""
+        result = event.get_result()
+        new_chain = []
+        
+        for item in result.chain:
+            if isinstance(item, Plain):
+                # 调用处理核心
+                components = await self._process_text_with_markdown(item.text)
+                new_chain.extend(components)
+            else:
+                new_chain.append(item)
+                
+        result.chain = new_chain
+
+    async def _process_text_with_markdown(self, text: str) -> List:
+        """
+        核心逻辑：
+        1. 按 <md> 标签分割文本。
+        2. 标签内 -> 渲染图片。
+        3. 标签外 -> 执行 remove_markdown 净化。
+        """
+        components = []
+        pattern = r"(<md>.*?</md>)"
+        parts = re.split(pattern, text, flags=re.S)
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            if part.startswith("<md>") and part.endswith("</md>"):
+                # ============ 处理 <md> 内部 (保留 Markdown 并渲染) ============
+                md_content = part[4:-5].strip()
+                if not md_content:
+                    continue
+
+                # LaTeX 清洗
+                md_content = md_content.replace(r"\$", "$")
+                md_content = md_content.replace(r"\\$", "$")
+                md_content = md_content.replace(r"\\_", "_")
+                # 修复行内公式空格: $ \sin -> $\sin
+                md_content = re.sub(r'\$\s+(\\)', r'$\1', md_content)
+                md_content = re.sub(r'\$\s+(.*?)\s+\$', r'$\1$', md_content)
+
+                image_filename = f"{uuid.uuid4()}.png"
+                output_path = os.path.join(self.IMAGE_CACHE_DIR, image_filename)
+
+                try:
+                    await self._render_image(md_content, output_path)
+                    if os.path.exists(output_path):
+                        components.append(Image.fromFileSystem(output_path))
+                    else:
+                        # 渲染失败回退时，依然保留原文以便调试
+                        components.append(Plain(f"--- 渲染失败 ---\n{md_content}"))
+                except Exception as e:
+                    logger.error(f"渲染异常: {e}")
+                    components.append(Plain(f"--- 渲染异常 ---\n{md_content}"))
+            
+            else:
+                # ============ 处理 <md> 外部 (移除所有 Markdown) ============
+                # 这里调用 remove_markdown 确保普通对话没有格式干扰
+                cleaned_text = self.remove_markdown(part)
+                if cleaned_text.strip():
+                    components.append(Plain(cleaned_text))
+
+        return components
+
+    def remove_markdown(self, text: str) -> str:
+        """
+        移除文本中的 Markdown 格式 (保留纯文本内容)
+        逻辑参考自 AstrBot Markdown Killer 插件
+        """
+        if not text:
+            return ""
+
+        # 1. 移除代码块 (保留代码内容) ```code``` -> code
+        text = re.sub(r"```(?:[a-zA-Z0-9+\-]*\s+)?([\s\S]*?)```", r"\1", text)
+
+        # 2. 移除行内代码 `code` -> code
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        
+        # 3. 移除粗体/斜体
+        # Bold: **text** or __text__
+        text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+        text = re.sub(r"__([^_]+)__", r"\1", text)
+        
+        # Italic: *text* or _text_
+        text = re.sub(r"(^|[^\w\*])\*(?!\s)([^*]+)(?<!\s)\*(?=$|[^\w\*])", r"\1\2", text)
+        text = re.sub(r"(^|[^\w_])_(?!\s)([^_]+)(?<!\s)_(?=$|[^\w_])", r"\1\2", text)
+        
+        # 4. 移除标题 # Title -> Title
+        text = re.sub(r"^(#{1,6})\s+(.*)", r"\2", text, flags=re.MULTILINE)
+        
+        # 5. 移除引用 > text -> text
+        text = re.sub(r"^>\s+(.*)", r"\1", text, flags=re.MULTILINE)
+        
+        # 6. 移除链接 [text](url) -> text
+        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+        
+        # 7. 移除列表标记 - text -> text
+        text = re.sub(r"^\s*[-*]\s+(.*)", r"\1", text, flags=re.MULTILINE)
+        
+        return text
+
+    async def _render_image(self, md_text: str, output_path: str, min_width: int = 600):
+        """渲染图片逻辑 (保持不变)"""
+        if not self.browser or not self.browser.is_connected():
+            await self.initialize()
+
+        html_body = self.markdown_parser(md_text)
+        full_html = self._get_html_template(html_body, min_width)
+
+        context = await self.browser.new_context(
+            device_scale_factor=2, 
+            viewport={'width': 1600, 'height': 1200} 
+        )
+        page = await context.new_page()
+
+        try:
+            await page.set_content(full_html, wait_until="networkidle")
+            await page.evaluate("if(window.MathJax) { MathJax.typesetPromise(); }")
+            await asyncio.sleep(0.3)
+            body = await page.query_selector("body")
+            if body:
+                await body.screenshot(path=output_path)
+        finally:
+            await page.close()
+            await context.close()
+
+    def _get_html_template(self, content: str, min_width: int) -> str:
+        """HTML 模板 (保持不变)"""
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <script>
+            window.MathJax = {{
+                tex: {{ inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], displayMath: [['$$', '$$']] }},
+                options: {{ enableMenu: false }},
+                svg: {{ fontCache: 'global' }},
+                startup: {{ typeset: false }}
+            }};
+            </script>
+            <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+            <style>
+                #MathJax_Message {{ display: none !important; }}
+                body {{
+                    width: fit-content; min-width: {min_width}px; max-width: 1500px;
+                    padding: 20px; margin: 0; background-color: white; display: inline-block;
+                    font-family: -apple-system, sans-serif; font-size: 16px; line-height: 1.6; color: #24292e;
+                }}
+                img {{ max-width: 100%; height: auto; }}
+                pre {{ background-color: #f6f8fa; border-radius: 6px; padding: 16px; overflow: auto; }}
+                table {{ border-collapse: collapse; margin-bottom: 16px; }}
+                th, td {{ border: 1px solid #dfe2e5; padding: 6px 13px; }}
+                tr:nth-child(2n) {{ background-color: #f6f8fa; }}
+                blockquote {{ border-left: 0.25em solid #dfe2e5; color: #6a737d; padding: 0 1em; margin: 0; }}
+            </style>
+        </head>
+        <body>{content}</body>
+        </html>
+        """
